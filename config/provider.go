@@ -11,7 +11,7 @@ import (
 
 const (
 	iocPrefix    = "_cfg_:"
-	defaultScope = "app"
+	defaultScope = "config"
 )
 
 var extMap = map[string]string{
