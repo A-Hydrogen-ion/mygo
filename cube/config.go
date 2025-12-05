@@ -2,41 +2,43 @@ package cube
 
 import (
 	"fmt"
+	"time"
 )
 
-// CubeConfig 用于配置客户端连接信息。
-type CubeConfig struct {
-	BaseURL           string        `json:"baseUrl" yaml:"baseUrl"`           // 基础 URL
-	APIKey            string        `json:"apiKey" yaml:"apiKey"`             // 应用密钥 
-	DefaultBucketName string        `json:"bucketName" yaml:"bucketName"`     // 默认存储桶名称 
-	TimeoutSeconds    int           `json:"timeout" yaml:"timeout"`           // 请求超时时间 
+var DefaultConfig = Config{
+	Enable:           	false,
+	BaseURL:          	"",
+	APIKey:          	"",
+	DefaultBucketKey: 	"",
+	DefaultBucketName: 	"",
+
+	Timeout: 10 * time.Second,
+}
+
+type Config struct {
+	Enable           	bool   `json:"enable" yaml:"enable" mapstructure:"enable"`                     // 是否启用
+	BaseURL          	string `json:"baseUrl" yaml:"baseUrl" mapstructure:"base_url"`                // 基础 URL
+	APIKey           	string `json:"apiKey" yaml:"apiKey" mapstructure:"api_key"`                   // 应用密钥
+	DefaultBucketKey 	string `json:"bucketKey" yaml:"bucketKey" mapstructure:"default_bucket_key"`  // 默认存储桶 key（业务标识）
+	DefaultBucketName 	string `json:"bucketName" yaml:"bucketName" mapstructure:"default_bucket_name"` // 默认存储桶名称
+
+	Timeout time.Duration `json:"timeout" yaml:"timeout" mapstructure:"timeout"` // HTTP 请求超时时间
 }
 
 type CubeError struct {
-	Code int    // 业务错误码
-	Msg  string // 业务错误信息
+	Code int    
+	Msg  string 
 }
 
-// Error 实现了 Go 的 error 接口，用于打印错误信息
+// Error 实现 error 接口
 func (e *CubeError) Error() string {
 	return fmt.Sprintf("Cube API 业务错误 [Code: %d]: %s", e.Code, e.Msg)
 }
 
-// NewCubeError 带参错误构造函数 
+// NewCubeError 是 CubeError 的工厂方法
 func NewCubeError(code int, message string) *CubeError {
 	return &CubeError{
 		Code: code,
 		Msg:  message,
 	}
-}
-
-// UploadResponse 定义 Cube 文件上传 API 的标准响应结构
-type UploadResponse struct {
-    Code int    `json:"code"`
-    Msg  string `json:"msg"`
-    Data struct {
-        ObjectKey string `json:"object_key"` 
-        URL       string `json:"url"`
-        FileID    string `json:"file_id"`   
-    } `json:"data"`
 }

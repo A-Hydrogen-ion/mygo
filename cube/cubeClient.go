@@ -12,96 +12,93 @@ import (
 	"github.com/go-resty/resty/v2"
 )
 
-// CubeClient 核心结构体。
-// 封装了配置和 HTTP 客户端实例。
 type CubeClient struct {
-	Config *CubeConfig
+	Config *Config
 	Resty  *resty.Client
 }
 
-// NewClient 是客户端的工厂函数
-func NewClient(cfg *CubeConfig) *CubeClient {
+// UploadResponse 定义 Cube 文件上传 API 的标准响应结构
+type UploadResponse struct {
+	Code int    `json:"code"`
+	Msg  string `json:"msg"`
+	Data struct {
+		ObjectKey string `json:"object_key"`
+		URL       string `json:"url"`
+		FileID    string `json:"file_id"`
+	} `json:"data"`
+}
 
-	// 处理 nil 配置
+// NewCubeClient 创建一个 CubeClient。可以注入一个已有的 resty.Client（可为 nil）。
+// 当 httpClient 为 nil 时，函数会创建并配置一个默认的 resty.Client。
+func NewCubeClient(cfg *Config, httpClient *resty.Client) (*CubeClient, error) {
 	if cfg == nil {
-		cfg = &CubeConfig{TimeoutSeconds: 10} // 使用 Int 秒数作为默认值
+		return nil, errors.New("cube: cfg 不能为空")
 	}
-	// 确保 BaseURL 已配置
 	if cfg.BaseURL == "" {
-		panic("cube: BaseURL 未配置")
+		return nil, errors.New("cube: BaseURL 未配置")
 	}
 
-	// 确保 TimeoutSeconds 不为零
-	if cfg.TimeoutSeconds <= 0 {
-		cfg.TimeoutSeconds = 10
+	// 确保默认超时时间
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = 10 * time.Second
 	}
 
-	// 将秒数转换为 time.Duration 供 SetTimeout 使用
-	timeoutDuration := time.Duration(cfg.TimeoutSeconds) * time.Second
+	timeoutDuration := cfg.Timeout
 
-	restyClient := resty.New()
+	var client *resty.Client
+	if httpClient != nil {
+		client = httpClient
+	} else {
+		client = resty.New()
+	}
 
-	// 应用基础配置
-	restyClient.SetBaseURL(cfg.BaseURL).
-		SetTimeout(timeoutDuration). // 使用转换后的 Duration
+	// 应用基础配置到 resty 客户端
+	client.SetBaseURL(strings.TrimRight(cfg.BaseURL, "/")).
+		SetTimeout(timeoutDuration).
 		SetHeader("Key", cfg.APIKey)
 
-	client := &CubeClient{
-		Config: cfg,
-		Resty:  restyClient,
-	}
-
-	return client
+	return &CubeClient{Config: cfg, Resty: client}, nil
 }
 
 // UploadFile 上传文件到存储立方
-func (c *CubeClient) UploadFile(
-	localPath string,
-	location string,
-	convertWebp bool,
-	useUuid bool) (string, error) {
-
+func (c *CubeClient) UploadFile(localPath, location string, convertWebp, useUuid bool) (string, error) {
 	bucketName := c.Config.DefaultBucketName
 	if bucketName == "" {
 		return "", errors.New("默认存储桶名称未配置，请检查 CubeConfig")
 	}
 
-	// 打开本地文件
 	file, err := os.Open(localPath)
 	if err != nil {
-		return "", fmt.Errorf("无法开启本地文档: %w", err)
+		return "", fmt.Errorf("无法打开本地文件: %w", err)
 	}
 	defer file.Close()
 
 	fileName := filepath.Base(localPath)
 
-	// 构建 Multipart/Form-Data 请求
-	var result UploadResponse
-	req := c.Resty.R().
-		SetFileReader("file", fileName, file). // 文件字段 (SetFileReader 自动处理 IO)
-		SetFormData(map[string]string{
-			"bucket":       bucketName,
-			"convert_webp": fmt.Sprintf("%v", convertWebp), // boolean 转换为 string
-			"use_uuid":     fmt.Sprintf("%v", useUuid),     // boolean 转换为 string
-		}).
-		SetResult(&result)
+	// 构建表单数据，避免重复调用 SetFormData 覆盖原有 map
+	form := map[string]string{
+		"bucket":       bucketName,
+		"convert_webp": fmt.Sprintf("%v", convertWebp),
+		"use_uuid":     fmt.Sprintf("%v", useUuid),
+	}
 	if location != "" {
-		req.SetFormData(map[string]string{"location": location})
+		form["location"] = location
 	}
 
-	// 发送 POST 请求
+	var result UploadResponse
+	req := c.Resty.R().
+		SetFileReader("file", fileName, file).
+		SetFormData(form).
+		SetResult(&result)
+
 	resp, err := req.Post("/api/upload")
 
 	if err != nil {
 		return "", fmt.Errorf("cube 客户端请求失败: %w", err)
 	}
 
-	// 错误捕获
-
-	// 检查是否有 HTTP 错误
 	if resp.IsError() {
-		return "", fmt.Errorf("cube HTTP 错误: %s (Status: %d). Response Body: %s",
-			resp.Status(), resp.StatusCode(), resp.String()) // 打印响应体，帮助调试
+		return "", fmt.Errorf("cube HTTP 错误: %s (Status: %d). Response Body: %s", resp.Status(), resp.StatusCode(), resp.String())
 	}
 
 	// 检查是否有 JSON 解析错误（仅当 HTTP 状态码为成功时）
@@ -111,11 +108,6 @@ func (c *CubeClient) UploadFile(
 			resp.Error(), resp.String())
 	}
 
-	if resp.IsError() {
-		return "", fmt.Errorf("cube HTTP 错误: %s (Status: %d)", resp.Status(), resp.StatusCode())
-	}
-
-	// 检查业务错误
 	if result.Code != 200 {
 		return "", NewCubeError(result.Code, result.Msg)
 	}
@@ -134,7 +126,6 @@ func (c *CubeClient) DeleteFile(objectKey string) error {
 		return errors.New("默认存储桶名称未配置，请检查 CubeConfig")
 	}
 
-	// 构建 DELETE 请求，并将参数放入 Query Params
 	var result UploadResponse
 	resp, err := c.Resty.R().
 		SetQueryParams(map[string]string{
@@ -151,7 +142,6 @@ func (c *CubeClient) DeleteFile(objectKey string) error {
 		return fmt.Errorf("cube HTTP 错误: %s (Status: %d)", resp.Status(), resp.StatusCode())
 	}
 
-	// 检查业务 code
 	if result.Code != 200 {
 		return NewCubeError(result.Code, result.Msg)
 	}
@@ -159,19 +149,16 @@ func (c *CubeClient) DeleteFile(objectKey string) error {
 	return nil
 }
 
-// GetFileUrl 拼接获取文件的 URL
-func (c *CubeClient) GetFileUrl(objectKey string, thumbnail bool) string {
-	// 使用 Go 标准库 net/url 的 QueryEscape 对 objectKey 进行 URL 编码
+// GetFileURL 返回文件访问 URL（会对 objectKey 做 URL 编码）
+func (c *CubeClient) GetFileURL(objectKey string, thumbnail bool) string {
 	encodedKey := url.QueryEscape(objectKey)
-	baseUrl := strings.TrimRight(c.Config.BaseURL, "/")
-	finalUrl := fmt.Sprintf("%s/api/file?bucket=%s&object_key=%s",
-		baseUrl,
-		c.Config.DefaultBucketName,
-		encodedKey)
-
+	baseURL := strings.TrimRight(c.Config.BaseURL, "/")
+	finalURL := fmt.Sprintf("%s/api/file?bucket=%s&object_key=%s", 
+					baseURL, 
+					c.Config.DefaultBucketName,
+					encodedKey)
 	if thumbnail {
-		finalUrl += "&thumbnail=true"
+		finalURL += "&thumbnail=true"
 	}
-
-	return finalUrl
+	return finalURL
 }
